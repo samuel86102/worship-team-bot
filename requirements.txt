@@ -1,0 +1,6 @@
+pandas
+requests
+python-dotenv
+Flask
+line-bot-sdk>=3.0.0
+urllib3
