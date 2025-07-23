@@ -198,9 +198,11 @@ def process_input(user_input: str) -> str:
     # 3. Load data and search
     try:
         df = load_data_from_sheet()
+
         if df is None or "日期" not in df.columns:
             return "抱歉，服事表資料暫時無法載入，請稍後再試。"
         
+        df = df.iloc[:, 0:24]  # 保留前 24 欄（A-X）
         df["日期"] = df["日期"].astype(str).str.strip()
         all_results_text = []
         found_any_data = False
