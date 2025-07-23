@@ -20,6 +20,10 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+RUN_LOCAL_TEST = os.getenv("RUN_LOCAL_TEST", "").lower() in ("1", "true", "yes")
+
+
+
 
 if not all([OPENROUTER_API_KEY, GOOGLE_SHEET_URL, LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET]):
     print("ERROR: Missing one or more environment variables. Please check your .env file.")
@@ -263,98 +267,95 @@ def callback():
         abort(500)
     return 'OK'
 
+def process_input(user_input):
+    reply_text = ""
+    found = False
+    try:
+        # 1. Get formatted date string from LLM
+        llm_output = get_formatted_date(user_input)
+        print(f"User input: {user_input}, LLM output: {llm_output}")
+
+        if not llm_output:
+            reply_text = "抱歉!我無法理解您輸入的日期，請再試一次~"
+        else:
+            # 2. Load data (uses cached version if available)
+            df = load_data_from_sheet()
+            if df is None or "日期" not in df.columns:
+                reply_text = "抱歉!服事表資料暫時無法載入，請稍後再試~"
+            else:
+                df["日期"] = df["日期"].astype(str).str.strip()
+                search_dates = []
+                query_description = "" # For the reply header
+
+                if llm_output.startswith("MONTH:"):
+                    try:
+                        year_month_str = llm_output.split(":")[1]
+                        year, month = map(int, year_month_str.split('/'))
+                        # Generate all M/D for that month
+                        num_days = monthrange(year, month)[1] # (weekday of first day, num_days)
+                        for day in range(1, num_days + 1):
+                            search_dates.append(f"{month}/{day}")
+                        query_description = f"{year}年{month}月"
+                        print(f"Month query for {year}-{month}, generated {len(search_dates)} dates.")
+                    except Exception as e:
+                        print(f"Error parsing month string '{llm_output}': {e}")
+                        reply_text = f"抱歉，解析月份資訊 '{llm_output}' 時出錯，請確認格式或重新提問。"
+                else:
+                    search_dates = [date_str.strip() for date_str in llm_output.split(',') if date_str.strip()]
+                    query_description = llm_output
+                    print(f"Date(s) query for: {search_dates}")
+
+                if not reply_text: # Proceed if no error during month parsing
+                    all_results_text = []
+                    found_any_data = False
+                    if not search_dates: # If after parsing, search_dates is empty (e.g. LLM returned just a comma)
+                            reply_text = "抱歉，我無法解析您輸入的日期，請再試一次。"
+                    else:
+                        for search_date_str in search_dates:
+                            result = df[df["日期"] == search_date_str]
+
+                            if not result.empty:
+                                found_any_data = True
+                                found = True
+                                date_reply_parts = [f"📅 {search_date_str} {result['星期'].iloc[0]}\n\n💡服事人員💡"]
+                                for index, row in result.iterrows():
+                                    row_details = []
+                                    for col in result.columns:
+                                        if col in ['季度','日期','星期','']:
+                                            continue
+                                        if pd.notna(row[col]) and str(row[col]).strip() != "":
+                                            row_details.append(f"🔹{col}: {row[col]}")
+                                    if row_details:
+                                        date_reply_parts.append("\n".join(row_details))
+                                all_results_text.append("\n".join(date_reply_parts))
+                        
+                        if found_any_data:
+                            reply_text = f"以下為 {query_description} 的服事表:\n\n" + "\n\n".join(all_results_text)
+                        else:
+                            reply_text = f"抱歉！找不到 {query_description} 的服事表🙁\n請確認日期或月份是否有安排服事"
+
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        reply_text = f"❌ 查詢失敗，發生內部錯誤。請稍後再試或聯絡管理員。"
+
+    final_reply = ""
+    if found:
+        greeting_text = get_random_greeting("greeting_templates.json")
+        final_reply += greeting_text + "\n\n"
+    
+    final_reply += reply_text
+    return final_reply
+
 # === Line Message Handler ===
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         user_input = event.message.text
-        reply_text = ""
-        found = False
+        
+        reply_text = process_input(user_input)
 
-        try:
-            # 1. Get formatted date string from LLM
-            llm_output = get_formatted_date(user_input)
-            app.logger.info(f"User input: {user_input}, LLM output: {llm_output}")
-
-            if not llm_output:
-                reply_text = "抱歉!我無法理解您輸入的日期，請再試一次~"
-            else:
-                # 2. Load data (uses cached version if available)
-                df = load_data_from_sheet()
-                if df is None or "日期" not in df.columns:
-                    reply_text = "抱歉!服事表資料暫時無法載入，請稍後再試~"
-                else:
-                    df["日期"] = df["日期"].astype(str).str.strip()
-                    search_dates = []
-                    query_description = "" # For the reply header
-
-                    if llm_output.startswith("MONTH:"):
-                        try:
-                            year_month_str = llm_output.split(":")[1]
-                            year, month = map(int, year_month_str.split('/'))
-                            # Generate all M/D for that month
-                            num_days = monthrange(year, month)[1] # (weekday of first day, num_days)
-                            for day in range(1, num_days + 1):
-                                search_dates.append(f"{month}/{day}")
-                            query_description = f"{year}年{month}月"
-                            app.logger.info(f"Month query for {year}-{month}, generated {len(search_dates)} dates.")
-                        except Exception as e:
-                            app.logger.error(f"Error parsing month string '{llm_output}': {e}")
-                            reply_text = f"抱歉，解析月份資訊 '{llm_output}' 時出錯，請確認格式或重新提問。"
-                    else:
-                        search_dates = [date_str.strip() for date_str in llm_output.split(',') if date_str.strip()]
-                        query_description = llm_output
-                        app.logger.info(f"Date(s) query for: {search_dates}")
-
-                    if not reply_text: # Proceed if no error during month parsing
-                        all_results_text = []
-                        found_any_data = False
-                        if not search_dates: # If after parsing, search_dates is empty (e.g. LLM returned just a comma)
-                             reply_text = "抱歉，我無法解析您輸入的日期，請再試一次。"
-                        else:
-                            for search_date_str in search_dates:
-                                # Ensure date formats from sheet and query match (e.g. M/D vs MM/DD)
-                                # The LLM is prompted for M/D. Assume sheet uses M/D.
-                                # No specific normalization here, relying on string match.
-                                # For more robustness, could parse search_date_str and sheet dates to datetime objects
-                                # and compare them, or normalize both to a consistent M/D string format.
-                                result = df[df["日期"] == search_date_str]
-
-                                if not result.empty:
-                                    found_any_data = True
-                                    found = True
-                                    date_reply_parts = [f"📅 {search_date_str} {result['星期'].iloc[0]}\n\n💡服事人員💡"]
-                                    for index, row in result.iterrows():
-                                        row_details = []
-                                        for col in result.columns:
-                                            if col in ['季度','日期','星期','']:
-                                                continue
-                                            if pd.notna(row[col]) and str(row[col]).strip() != "":
-                                                row_details.append(f"🔹{col}: {row[col]}")
-                                        if row_details: # Only add if there's actual data for this row beyond date
-                                            date_reply_parts.append("\n".join(row_details))
-                                    all_results_text.append("\n".join(date_reply_parts))
-                            
-                            if found_any_data:
-                                reply_text = f"以下為 {query_description} 的服事表:\n\n" + "\n\n".join(all_results_text)
-                            else:
-                                reply_text = f"抱歉！找不到 {query_description} 的服事表🙁\n請確認日期或月份是否有安排服事"
-
-
-        except Exception as e:
-            app.logger.error(f"Error processing message: {e}", exc_info=True) # Added exc_info for more details
-            reply_text = f"❌ 查詢失敗，發生內部錯誤。請稍後再試或聯絡管理員。"
-
-
-
-        messages = []
-
-        if found:
-            greeting_text = get_random_greeting("greeting_templates.json")
-            messages.append(TextMessage(text=greeting_text))
-
-        messages.append(TextMessage(text=reply_text))
+        messages = [TextMessage(text=reply_text)]
 
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
@@ -362,8 +363,6 @@ def handle_message(event):
                 messages=messages
             )
         )
-
-
 
 if __name__ == "__main__":
     # Load data once at startup to ensure it's available and check for "日期" column
@@ -377,9 +376,21 @@ if __name__ == "__main__":
             exit(1)
         print(f"Initial data load successful. Columns: {df_data.columns.tolist()}")
         print(f"Sample '日期' values: {df_data['日期'].dropna().unique()[:5] if '日期' in df_data.columns else 'Column not found'}")
-    except Exception as e:
-        print(f"CRITICAL ERROR during initial data load: {e}. Exiting.")
-        exit(1)
 
-    port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port, debug=False) # Set debug=True for development if needed
+        # Check if running in local test mode
+        if RUN_LOCAL_TEST:
+            print("\n--- Local Test Mode ---")
+            print("Enter your message to test the bot. Type 'exit' to quit.")
+            while True:
+                user_input = input("> ")
+                if user_input.lower() == 'exit':
+                    break
+                response = process_input(user_input)
+                print(f"Bot: {response}")
+        else:
+            port = int(os.environ.get('PORT', 5001))
+            app.run(host='0.0.0.0', port=port, debug=False)
+
+    except Exception as e:
+        print(f"CRITICAL ERROR during startup: {e}. Exiting.")
+        exit(1)
