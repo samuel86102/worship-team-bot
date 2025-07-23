@@ -181,6 +181,40 @@ def parse_llm_command(command: str) -> tuple[list[str], str]:
             
     return [], ""
 
+def check_weekday_and_suggest_weekend(single_date_str: str) -> str | None:
+    """
+    If the given date string (e.g., "5/22") is a weekday, this function
+    returns a suggestion string with the nearest weekend dates.
+    Otherwise, it returns None.
+    """
+    try:
+        current_year = datetime.now().year
+        date_obj = datetime.strptime(f"{current_year}/{single_date_str}", "%Y/%m/%d")
+        weekday = date_obj.weekday()  # Monday: 0, Sunday: 6
+
+        if 0 <= weekday <= 4:  # Monday to Friday
+            weekday_str_map = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+            weekday_str = weekday_str_map[weekday]
+
+            # Find the upcoming Saturday and Sunday
+            next_saturday = date_obj + timedelta(days=(5 - weekday + 7) % 7)
+            next_sunday = date_obj + timedelta(days=(6 - weekday + 7) % 7)
+
+            return (
+                f"您查詢的日期 {single_date_str} ({weekday_str}) 並非週末喔！\n\n"
+                f"請問您是不是想查詢：\n"
+                f"➡️ {next_saturday.strftime('%-m/%-d')} (週六)\n"
+                f"➡️ {next_sunday.strftime('%-m/%-d')} (週日)"
+            )
+        return None  # It's a weekend day, do nothing.
+    except ValueError:
+        # Could not parse the date, so we can't check it.
+        return None
+    except Exception as e:
+        print(f"Error in check_weekday_and_suggest_weekend: {e}")
+        return None
+
+
 def process_input(user_input: str) -> str:
     """Main processing logic for a user query."""
     # 1. Get structured command from LLM
@@ -191,6 +225,12 @@ def process_input(user_input: str) -> str:
 
     # 2. Parse the command to get dates and description
     search_dates, query_description = parse_llm_command(command)
+
+    # If user asks for a single date that is a weekday, suggest the nearest weekend.
+    if command.startswith("DATE:") and len(search_dates) == 1:
+        suggestion = check_weekday_and_suggest_weekend(search_dates[0])
+        if suggestion:
+            return suggestion
 
     if not search_dates:
         return "抱歉，我無法理解您輸入的日期，請換個方式問問看，例如「下週三」或「八月的每個週日」。"
