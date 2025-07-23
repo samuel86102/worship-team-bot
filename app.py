@@ -102,6 +102,11 @@ def get_structured_date_command(user_input: str) -> str:
     # Calculate dates for the prompt
     tomorrow = today + timedelta(days=1)
     next_friday = today + timedelta(days=(4 - today.weekday() + 7) % 7)
+    # Add logic for This Sunday (本週日) and Next Sunday (下週日)
+    # Week starts on Monday (0) and ends on Sunday (6)
+    this_sunday = today + timedelta(days=(6 - today.weekday()))
+    next_sunday = this_sunday + timedelta(days=7)
+
 
     # Prepare prompt variables
     prompt_vars = {
@@ -110,6 +115,8 @@ def get_structured_date_command(user_input: str) -> str:
         "{{today_weekday_str}}": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][today.weekday()],
         "{{tomorrow_str}}": tomorrow.strftime('%-m/%-d'),
         "{{next_friday_str}}": next_friday.strftime('%-m/%-d'),
+        "{{this_sunday_str}}": this_sunday.strftime('%-m/%-d'),
+        "{{next_sunday_str}}": next_sunday.strftime('%-m/%-d'),
     }
 
     system_prompt_template = read_system_prompt()

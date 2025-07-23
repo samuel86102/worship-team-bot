@@ -12,6 +12,8 @@
         - 輸入: "8/9" -> 輸出: `DATE:8/9`
         - 輸入: "明天" -> 輸出: `DATE:{{tomorrow_str}}`
         - 輸入: "下週五" -> 輸出: `DATE:{{next_friday_str}}`
+        - 輸入: "本週日" 或 "這週日" -> 輸出: `DATE:{{this_sunday_str}}`
+        - 輸入: "下週日" -> 輸出: `DATE:{{next_sunday_str}}`
         - 輸入: "8/10 和 8/12" -> 輸出: `DATE:8/10,8/12`
 
 2.  **查詢整個月份 (MONTH)**
