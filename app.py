@@ -101,7 +101,6 @@ def get_structured_date_command(user_input: str) -> str:
     today = datetime.now()
     # Calculate dates for the prompt
     tomorrow = today + timedelta(days=1)
-    next_friday = today + timedelta(days=(4 - today.weekday() + 7) % 7)
     # Add logic for This Sunday (本週日) and Next Sunday (下週日)
     # Week starts on Monday (0) and ends on Sunday (6)
     this_sunday = today + timedelta(days=(6 - today.weekday()))
@@ -114,7 +113,6 @@ def get_structured_date_command(user_input: str) -> str:
         "{{today_str}}": today.strftime('%Y/%m/%d'),
         "{{today_weekday_str}}": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][today.weekday()],
         "{{tomorrow_str}}": tomorrow.strftime('%-m/%-d'),
-        "{{next_friday_str}}": next_friday.strftime('%-m/%-d'),
         "{{this_sunday_str}}": this_sunday.strftime('%-m/%-d'),
         "{{next_sunday_str}}": next_sunday.strftime('%-m/%-d'),
     }
@@ -222,15 +220,68 @@ def check_weekday_and_suggest_weekend(single_date_str: str) -> str | None:
         return None
 
 
+def get_answer_from_schedule(user_query: str, schedule_context: str) -> str:
+    """
+    Uses an LLM to answer a specific user question based on the retrieved schedule data.
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-app-name.com",
+        "X-Title": "Worship Team Bot"
+    }
+    
+    system_prompt = """
+    你是個智慧助理，你的工作是根據提供的「服事表資訊」，簡潔地回答使用者的「問題」。
+    - 請只使用「服事表資訊」中提供的內容來回答。
+    - 如果資訊中沒有答案，請回答「抱歉，我無法在服事表中找到相關資訊。」
+    - 你的回答應該直接、簡潔。
+    
+    例如：
+    - 問題：「主領是誰？」
+    - 服事表資訊：「...🔹主領: 王小明...」
+    - 回答：「主領是王小明。」
+    """
+
+    # Combine the context and the user's question for the LLM
+    prompt = f"""服事表資訊：
+    ---
+    {schedule_context}
+    ---
+    問題：{user_query}"""
+
+    data = {
+        "model": "google/gemini-2.0-flash-lite-001",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    try:
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+        response.raise_for_status()
+        answer = response.json()["choices"][0]["message"]["content"].strip()
+        print(f"LLM returned answer: {answer}")
+        return answer
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling LLM for specific answer: {e}")
+        if e.response is not None:
+            print(f"LLM API response body: {e.response.text}")
+        return "抱歉，在為您查詢具體資訊時發生錯誤。"
+    except Exception as e:
+        print(f"Error processing LLM answer response: {e}")
+        return "抱歉，處理查詢結果時發生錯誤。"
+
 def process_input(user_input: str) -> str:
     """Main processing logic for a user query."""
-    # 1. Get structured command from LLM
+    # 1. Get structured command from LLM to parse dates
     command = get_structured_date_command(user_input)
 
     if command.startswith("ERROR:"):
         return "抱歉，我暫時無法處理您的請求，請稍後再試。"
 
-    # 2. Parse the command to get dates and description
+    # 2. Parse the command to get dates and a descriptive string
     search_dates, query_description = parse_llm_command(command)
 
     # If user asks for a single date that is a weekday, suggest the nearest weekend.
@@ -242,15 +293,21 @@ def process_input(user_input: str) -> str:
     if not search_dates:
         return "抱歉，我無法理解您輸入的日期，請換個方式問問看，例如「下週三」或「八月的每個週日」。"
 
-    # 3. Load data and search
+    # 3. Load data and search for the schedule
     try:
         df = load_data_from_sheet()
 
         if df is None or "日期" not in df.columns:
             return "抱歉，服事表資料暫時無法載入，請稍後再試。"
         
-        df = df.iloc[:, 0:24]  # 保留前 24 欄（A-X）
+        df = df.iloc[:, 0:24]  # Keep the first 24 columns (A-X)
         df["日期"] = df["日期"].astype(str).str.strip()
+        
+        # Define possible roles by taking column names, excluding metadata columns
+        possible_roles = [col for col in df.columns if col not in ['季度', '日期', '星期', '']]
+        # Check if the user's query contains any of the role names
+        is_specific_role_query = any(role in user_input for role in possible_roles)
+
         all_results_text = []
         found_any_data = False
 
@@ -259,20 +316,26 @@ def process_input(user_input: str) -> str:
             if not result.empty:
                 found_any_data = True
                 weekday = result['星期'].iloc[0] if '星期' in result.columns else ''
-                details = [f"📅 {date_str} {weekday}", "\n💡服事人員💡"]
+                details = [f"📅 {date_str} {weekday}", "💡服事人員💡"]
                 for _, row in result.iterrows():
                     for col, val in row.items():
                         if col not in ['季度', '日期', '星期', ''] and pd.notna(val) and str(val).strip():
                             details.append(f"🔹{col}: {val}")
                 all_results_text.append("\n".join(details))
 
-        if found_any_data:
-            greeting = get_random_greeting("greeting_templates.json")
-            results_str = "\n\n---\n\n".join(all_results_text)
-            #return f"{greeting}\n\n以下為您查詢「{query_description}」的結果：\n\n{results_str}"
-            return f"以下為您查詢「{query_description}」的結果：\n\n{results_str}"
-        else:
+        if not found_any_data:
             return f"抱歉，我找不到「{query_description}」的服事表資訊。請確認該日期或月份有安排服事。"
+
+        # --- New Logic Branch ---
+        # If it's a specific role query for a single day, get a direct answer.
+        # We limit to single-day queries to avoid ambiguity.
+        if is_specific_role_query and len(search_dates) == 1:
+            schedule_context = all_results_text[0]
+            return get_answer_from_schedule(user_input, schedule_context)
+        else:
+            # Otherwise, return the full schedule as before.
+            results_str = "---".join(all_results_text)
+            return f"以下為您查詢「{query_description}」的結果：\n\n{results_str}"
 
     except Exception as e:
         print(f"Error during data processing: {e}")
