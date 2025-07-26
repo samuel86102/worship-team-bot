@@ -316,7 +316,7 @@ def process_input(user_input: str) -> str:
             if not result.empty:
                 found_any_data = True
                 weekday = result['星期'].iloc[0] if '星期' in result.columns else ''
-                details = [f"📅 {date_str} {weekday}", "💡服事人員💡"]
+                details = [f"📅 {date_str} {weekday}\n", "💡服事人員💡"]
                 for _, row in result.iterrows():
                     for col, val in row.items():
                         if col not in ['季度', '日期', '星期', ''] and pd.notna(val) and str(val).strip():
@@ -334,7 +334,7 @@ def process_input(user_input: str) -> str:
             return get_answer_from_schedule(user_input, schedule_context)
         else:
             # Otherwise, return the full schedule as before.
-            results_str = "---".join(all_results_text)
+            results_str = "\n\n---\n\n".join(all_results_text)
             return f"以下為您查詢「{query_description}」的結果：\n\n{results_str}"
 
     except Exception as e:
